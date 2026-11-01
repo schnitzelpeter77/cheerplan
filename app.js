@@ -301,7 +301,7 @@ function vHome() {
   return `
     <div class="hero">${SPARKLES}
       <div class="heroIn">
-        <div class="heroSmall">ACU Bremerhaven</div>
+        <img class="heroLogo" src="icons/logo.jpg" alt="ACU Athletics Cheer Unit">
         <div class="heroBig">${greeting()}${name ? ', ' + esc(name) : ''}!</div>
         <div class="heroSub">${MOTTOS[day % MOTTOS.length]}</div>
       </div>${ART.pompoms}
@@ -324,7 +324,7 @@ function vHome() {
 
 function showWelcome() {
   const o = $('#overlay'); o.hidden = false; o.classList.add('welcome');
-  o.innerHTML = `<div class="rMain">${SPARKLES}${ART.pompoms}
+  o.innerHTML = `<div class="rMain">${SPARKLES}<img class="wLogo" src="icons/logo.jpg" alt="ACU Athletics Cheer Unit">${ART.pompoms}
     <div class="wTitle">${esc(WELCOME.title)}</div>
     <div class="wText">${esc(WELCOME.text)}</div>
     <div class="wFrom">– ${esc(WELCOME.from)}</div>
