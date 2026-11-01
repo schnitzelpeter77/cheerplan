@@ -176,6 +176,19 @@ function upgrade(d) {
   d.me.plans.forEach(planDefaults);
   // Wunsch Nov. 2026: Zählen mit Stimme standardmäßig aus
   if (!d.patches.includes('voice-off-1')) { d.patches.push('voice-off-1'); d.me.plans.forEach(p => { p.count = false; }); }
+  // Wunsch Nov. 2026: Tabata ist ein eigener Konditionsplan, Beweglichkeit ohne Tabata-Pausen
+  if (!d.patches.includes('tabata-split-1')) {
+    d.patches.push('tabata-split-1');
+    const kond = ['Jumping Jacks', 'Squats', 'Plank halten'];
+    const flex = d.me.plans.find(p => p.name === 'Flyer-Beweglichkeit');
+    if (flex) { flex.exercises = flex.exercises.filter(e => !kond.includes(e.name)); flex.rest = 0; }
+    if (!d.me.plans.some(p => p.name === 'Tabata')) {
+      const t = { id: uid(), name: 'Tabata', rest: 10, rounds: 1, count: false, bpm: 120, musicId: null, musicName: '',
+        exercises: [...kond, 'Mountain Climbers', 'Ausfallschritte', 'High Knees', 'Sit-ups', 'Burpees']
+          .map(name => ({ id: uid(), name, seconds: 20, sides: false })) };
+      d.me.plans.unshift(t);
+    }
+  }
   return d;
 }
 function planDefaults(p) {
@@ -723,10 +736,10 @@ function vTraining() {
   return `<h2>Geplant</h2>
     ${up.map(item).join('') || empty('Nichts geplant', 'Plane dein nächstes Training aus Bausteinen wie Aufwärmen, Stunts und Dehnen.', 'stopwatch')}
     <button class="btn primary block" data-a="newSession">+ Training planen</button>
-    <h2>Tabata-Pläne</h2>
+    <h2>Tabata & Übungspläne</h2>
     ${planCards() || '<p class="hint">Noch keine Pläne.</p>'}
-    <button class="btn block" data-a="newPlan">+ Neuer Tabata-Plan</button>
-    <p class="hint">Tipp: Im Training kannst du einem Baustein einen Tabata-Plan zuordnen. Dann läuft er dort mit Musik und Zählen.</p>
+    <button class="btn block" data-a="newPlan">+ Neuer Plan</button>
+    <p class="hint">Tipp: Im Training kannst du einem Baustein einen Plan zuordnen, z. B. Tabata beim Aufwärmen. Dann läuft er dort mit Musik.</p>
     ${past.length ? `<h2>Vergangen</h2>${past.map(item).join('')}` : ''}`;
 }
 function attSummary(s) {
@@ -746,8 +759,8 @@ function vSession(s) {
         <span class="sub" style="margin:0">Min</span>`}
       </div>
       ${db.me.plans.length ? `<select data-in="bPlan" data-id="${b.id}" style="margin-top:8px">
-        <option value="">Ohne Tabata-Plan (nur Timer)</option>
-        ${db.me.plans.map(p => `<option value="${p.id}" ${p.id === b.planId ? 'selected' : ''}>Tabata: ${esc(p.name)}</option>`).join('')}</select>` : ''}
+        <option value="">Ohne Plan (nur Timer)</option>
+        ${db.me.plans.map(p => `<option value="${p.id}" ${p.id === b.planId ? 'selected' : ''}>Plan: ${esc(p.name)}</option>`).join('')}</select>` : ''}
       <input data-in="bNote" data-id="${b.id}" value="${esc(b.note)}" placeholder="Was genau? z. B. Extensions, Full Downs" style="margin-top:8px">
       <div class="tools" style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px">
         <button class="icon" data-a="bUp" data-i="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
@@ -933,10 +946,10 @@ function vPlan(p) {
       </div>
     </div>`).join('');
   return `<div class="card"><label class="f" style="margin-top:0">Name des Plans</label><input data-in="pName" value="${esc(p.name)}"></div>
-    <h2>Tabata</h2>
+    <h2>Ablauf & Musik</h2>
     <div class="card">
       <div class="grid2">
-        <div><label class="f" style="margin-top:0">Pause nach jeder Übung (Sek.)</label><input data-in="pRest" type="number" inputmode="numeric" min="0" value="${p.rest}"></div>
+        <div><label class="f" style="margin-top:0">Pause nach jeder Übung (Sek., 0 = keine)</label><input data-in="pRest" type="number" inputmode="numeric" min="0" value="${p.rest}"></div>
         <div><label class="f" style="margin-top:0">Runden</label><input data-in="pRounds" type="number" inputmode="numeric" min="1" max="20" value="${p.rounds}"></div>
       </div>
       <label class="f">Musik</label>
