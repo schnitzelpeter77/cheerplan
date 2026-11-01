@@ -166,13 +166,44 @@ function load() {
     const d = JSON.parse(localStorage.getItem(KEY));
     if (d && d.v === 1) return upgrade(d);
   } catch (e) { /* defekte Daten: neu anfangen */ }
-  return seed();
+  return upgrade(seed());
 }
 function upgrade(d) {
   d.teams = d.teams || [];
   d.profile = d.profile || { name: '' };
   if (d.welcomed === undefined) d.welcomed = true;
+  patchTabata(d);
+  d.me.plans.forEach(planDefaults);
   return d;
+}
+function planDefaults(p) {
+  if (p.rest === undefined) p.rest = 10;
+  if (p.rounds === undefined) p.rounds = 1;
+  if (p.count === undefined) p.count = true;
+  if (p.bpm === undefined) p.bpm = 120;
+  if (p.musicId === undefined) { p.musicId = null; p.musicName = ''; }
+}
+// Wünsche der Trainerin (Nov. 2026): Tabata, 20 Sek., neue Tumbling- und Sprung-Skills
+function patchTabata(d) {
+  d.patches = d.patches || [];
+  if (d.patches.includes('tabata-1')) return;
+  d.patches.push('tabata-1');
+  const me = d.me;
+  me.plans = me.plans.filter(p => p.name !== 'Balance & Körperspannung');
+  const flex = me.plans.find(p => p.name === 'Flyer-Beweglichkeit');
+  if (flex) {
+    flex.exercises = flex.exercises.filter(e => !['Spagat', 'Scorpion-Zug mit Band'].includes(e.name));
+    flex.exercises.forEach(e => { if (e.name === 'Heel Stretch mit Band') e.name = 'Heel Stretch'; });
+    ['Plank halten', 'Squats', 'Jumping Jacks'].forEach(n => {
+      if (!flex.exercises.some(e => e.name === n)) flex.exercises.unshift({ id: uid(), name: n, seconds: 20, sides: false });
+    });
+    flex.exercises.forEach(e => { e.seconds = 20; });
+  }
+  const drop = ['Round-off', 'Flick-Flack (Back Handspring)', 'Salto rückwärts (Back Tuck)'];
+  me.skills = me.skills.filter(s => !(s.cat === 'Tumbling' && drop.includes(s.name)));
+  const addSkill = (name, cat) => { if (!me.skills.some(s => s.name.toLowerCase() === name.toLowerCase())) me.skills.push({ id: uid(), name, cat, status: 0, date: '' }); };
+  ['Handstand', 'Handstand abrollen', 'Vorwärtsrolle', 'Rückwärtsrolle', 'Radwende'].forEach(n => addSkill(n, 'Tumbling'));
+  ['Tuck', 'Spread Eagle', 'T-Sprung'].forEach(n => addSkill(n, 'Sprünge'));
 }
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(db)); }
@@ -253,7 +284,7 @@ function back() {
   render(); window.scrollTo(0, p.y || 0);
 }
 function tabTo(v) { leaveView(); state.stack = []; Object.assign(state, { view: v, id: null, tab: null }); render(); window.scrollTo(0, 0); }
-function leaveView() { stopPlayer(); }
+function leaveView() { stopPlayer(); stopPreview(); }
 
 function render() {
   let title = ROOT_TITLES[state.view], html = '';
@@ -475,7 +506,11 @@ function vPlay(r) {
 let player = null;
 let audioCtx = null;
 function ctx() {
-  if (!audioCtx) { const C = window.AudioContext || window.webkitAudioContext; if (C) audioCtx = new C(); }
+  if (!audioCtx) {
+    // iPhone: Ton auch bei Stummschalter (Musik + Ansagen sollen in der Halle zu hören sein)
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* älteres iOS */ }
+    const C = window.AudioContext || window.webkitAudioContext; if (C) audioCtx = new C();
+  }
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   return audioCtx;
 }
@@ -487,6 +522,74 @@ function beep(freq = 880, dur = 0.08, vol = 0.25) {
   g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
   o.start(t); o.stop(t + dur + 0.02);
 }
+// Englische Ansagen (audio/*.mp3, erzeugt mit Piper)
+const VOICE = {};
+let voiceLoading = null;
+function loadVoice() {
+  const c = ctx(); if (!c) return Promise.resolve();
+  if (!voiceLoading) {
+    voiceLoading = Promise.all(['1', '2', '3', '4', '5', '6', '7', '8', 'rest', 'go', 'ready', 'done'].map(n =>
+      fetch(`audio/${n}.mp3`).then(r => r.arrayBuffer())
+        .then(b => new Promise((res, rej) => c.decodeAudioData(b, res, rej)))
+        .then(buf => { VOICE[n] = buf; }).catch(() => {})));
+  }
+  return voiceLoading;
+}
+function say(name, when) {
+  const c = ctx(), buf = VOICE[name]; if (!c || !buf) return null;
+  const src = c.createBufferSource(); src.buffer = buf; src.connect(c.destination);
+  src.start(when || c.currentTime); return src;
+}
+// 8er-Zähler „One … Eight“ im eingestellten Tempo
+const counter = {
+  k: null,
+  start(bpm, dur = 3600) {
+    this.stop(); const c = ctx(); if (!c || !bpm) return;
+    const spb = 60 / bpm, t0 = c.currentTime + 0.08;
+    this.k = { spb, start: t0, next: t0, n: 0, end: t0 + dur - 0.1, srcs: [] };
+    this.k.timer = setInterval(() => this.fill(), 50); this.fill();
+  },
+  fill() {
+    const k = this.k, c = ctx(); if (!k) return;
+    while (k.next < c.currentTime + 0.25 && k.next < k.end) {
+      const src = say(String(k.n % 8 + 1), k.next); if (src) k.srcs.push(src);
+      k.n++; k.next += k.spb;
+    }
+    if (k.srcs.length > 12) k.srcs.splice(0, k.srcs.length - 12);
+  },
+  stop() { const k = this.k; if (!k) return; clearInterval(k.timer); k.srcs.forEach(s => { try { s.stop(); } catch (e) { /* schon fertig */ } }); this.k = null; },
+  idx() { const k = this.k; if (!k) return -1; const t = ctx().currentTime - k.start; return t < 0 ? -1 : Math.floor(t / k.spb) % 8; },
+};
+// Musik für Tabata: ein festes Audio-Element (iPhone erlaubt Abspielen nur nach Antippen),
+// leiser gemischt, damit die Ansagen hörbar bleiben
+const musicCache = {};
+let tabAudio = null, musicGain = null;
+function tabataAudio() {
+  if (tabAudio) return tabAudio;
+  tabAudio = new Audio(); tabAudio.loop = true; tabAudio.preload = 'auto';
+  try {
+    const c = ctx(); const src = c.createMediaElementSource(tabAudio);
+    musicGain = c.createGain(); musicGain.gain.value = 0.55; src.connect(musicGain); musicGain.connect(c.destination);
+  } catch (e) { /* dann eben volle Lautstärke */ }
+  return tabAudio;
+}
+async function cacheMusic() {
+  for (const p of db.me.plans) {
+    if (p.musicId && !musicCache[p.musicId]) {
+      try { const blob = await idb.get(p.musicId); if (blob) musicCache[p.musicId] = URL.createObjectURL(blob); } catch (e) { /* fehlt */ }
+    }
+  }
+}
+function playMusic(id, from0) {
+  const a = tabataAudio(), url = id && musicCache[id];
+  if (!url) { a.pause(); return; }
+  if (a.dataset.id !== id) { a.src = url; a.dataset.id = id; from0 = true; }
+  if (from0) { try { a.currentTime = 0; } catch (e) { /* noch nicht geladen */ } }
+  a.play().catch(() => {});
+}
+function pauseMusic() { if (tabAudio) tabAudio.pause(); }
+const musicInUse = id => db.routines.some(x => x.musicId === id) || db.me.plans.some(x => x.musicId === id);
+
 let wakeLock = null;
 async function keepAwake(on) {
   try {
@@ -605,7 +708,8 @@ function tapTempo() {
 }
 
 // ---------- Ansicht: Training ----------
-function sessionMinutes(s) { return s.blocks.reduce((a, b) => a + (Number(b.minutes) || 0), 0); }
+function blockMinutes(b) { const p = b.planId && plan(b.planId); return p ? Math.ceil((planSeconds(p) + 10) / 60) : (Number(b.minutes) || 0); }
+function sessionMinutes(s) { return s.blocks.reduce((a, b) => a + blockMinutes(b), 0); }
 function vTraining() {
   const t = today();
   const sorted = [...db.sessions].sort((a, b) => (a.date < b.date ? 1 : -1));
@@ -617,6 +721,10 @@ function vTraining() {
   return `<h2>Geplant</h2>
     ${up.map(item).join('') || empty('Nichts geplant', 'Plane dein nächstes Training aus Bausteinen wie Aufwärmen, Stunts und Dehnen.', 'stopwatch')}
     <button class="btn primary block" data-a="newSession">+ Training planen</button>
+    <h2>Tabata-Pläne</h2>
+    ${planCards() || '<p class="hint">Noch keine Pläne.</p>'}
+    <button class="btn block" data-a="newPlan">+ Neuer Tabata-Plan</button>
+    <p class="hint">Tipp: Im Training kannst du einem Baustein einen Tabata-Plan zuordnen. Dann läuft er dort mit Musik und Zählen.</p>
     ${past.length ? `<h2>Vergangen</h2>${past.map(item).join('')}` : ''}`;
 }
 function attSummary(s) {
@@ -631,9 +739,13 @@ function vSession(s) {
     <div class="card tblock" style="border-left-color:${BLOCKS[b.type]?.color}">
       <div class="bh">
         <select data-in="bType" data-id="${b.id}">${blockOptions(b.type)}</select>
-        <input class="min" data-in="bMin" data-id="${b.id}" type="number" inputmode="numeric" min="1" value="${b.minutes}" aria-label="Minuten">
-        <span class="sub" style="margin:0">Min</span>
+        ${b.planId && plan(b.planId) ? `<span class="sub" style="margin:0">≈ ${blockMinutes(b)} Min</span>`
+          : `<input class="min" data-in="bMin" data-id="${b.id}" type="number" inputmode="numeric" min="1" value="${b.minutes}" aria-label="Minuten">
+        <span class="sub" style="margin:0">Min</span>`}
       </div>
+      ${db.me.plans.length ? `<select data-in="bPlan" data-id="${b.id}" style="margin-top:8px">
+        <option value="">Ohne Tabata-Plan (nur Timer)</option>
+        ${db.me.plans.map(p => `<option value="${p.id}" ${p.id === b.planId ? 'selected' : ''}>Tabata: ${esc(p.name)}</option>`).join('')}</select>` : ''}
       <input data-in="bNote" data-id="${b.id}" value="${esc(b.note)}" placeholder="Was genau? z. B. Extensions, Full Downs" style="margin-top:8px">
       <div class="tools" style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px">
         <button class="icon" data-a="bUp" data-i="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
@@ -717,14 +829,43 @@ function vTeam() {
 }
 
 // ---------- Ansicht: Ich (Flyer) ----------
-const planSeconds = p => p.exercises.reduce((a, e) => a + (Number(e.seconds) || 0) * (e.sides ? 2 : 1), 0);
-function vMe() {
-  const plans = db.me.plans.map(p => `
+function planSteps(p) {
+  const rounds = clamp(Number(p.rounds) || 1, 1, 20), rest = Math.max(0, Number(p.rest) || 0), voice = p.count !== false;
+  const work = [];
+  p.exercises.forEach(e => {
+    const sec = Math.max(5, Number(e.seconds) || 20), name = e.name || 'Übung';
+    if (e.sides) work.push({ title: name, side: 'Links', seconds: sec }, { title: name, side: 'Rechts', seconds: sec });
+    else work.push({ title: name, seconds: sec });
+  });
+  const steps = [];
+  for (let r = 0; r < rounds; r++) {
+    work.forEach((w, i) => {
+      steps.push({
+        title: w.title, kind: 'work', seconds: w.seconds, music: p.musicId || null, voice, bpm: voice ? (p.bpm || 120) : 0,
+        tag: [w.side, rounds > 1 ? `Runde ${r + 1}/${rounds}` : ''].filter(Boolean).join(' · ') || 'Los!',
+        color: w.side === 'Rechts' ? '#7b3fe4' : '#e2337f',
+      });
+      const last = r === rounds - 1 && i === work.length - 1;
+      if (rest && !last) {
+        const nx = work[(i + 1) % work.length];
+        steps.push({ title: 'Pause', kind: 'rest', seconds: rest, music: p.musicId || null, voice, tag: 'Durchatmen', color: '#2fa564',
+          note: 'Gleich: ' + nx.title + (nx.side ? ` (${nx.side})` : '') });
+      }
+    });
+  }
+  return steps;
+}
+const planSeconds = p => planSteps(p).reduce((a, st) => a + st.seconds, 0);
+function planCards() {
+  return db.me.plans.map(p => `
     <div class="card"><div class="row">
       <button class="grow" data-a="openPlan" data-id="${p.id}" style="border:0;background:none;text-align:left;padding:0;cursor:pointer">
-        <div class="title">${esc(p.name)}</div><div class="sub">${p.exercises.length} Übungen · ${fmtTime(planSeconds(p))} Min</div></button>
+        <div class="title">${esc(p.name)}</div><div class="sub">${p.exercises.length} Übungen${p.rest ? ` · ${Math.max(5, ...p.exercises.map(e => Number(e.seconds) || 20))}/${p.rest} Sek.` : ''}${p.rounds > 1 ? ` · ${p.rounds} Runden` : ''} · ${fmtTime(planSeconds(p))} Min${p.musicName ? ' · ♪' : ''}</div></button>
       <button class="btn small primary" data-a="runPlan" data-id="${p.id}" ${p.exercises.length ? '' : 'disabled'}>▶︎ Start</button>
     </div></div>`).join('');
+}
+function vMe() {
+  const plans = planCards();
   const sk = db.me.skills, done = sk.filter(s => s.status === 2).length;
   const cats = [...new Set(sk.map(s => s.cat))];
   const skills = cats.map(c => `<div class="card"><div class="title">${esc(c)}</div>
@@ -739,7 +880,7 @@ function vMe() {
       <button class="icon" data-a="dDel" data-id="${d.id}">✕</button></div>
       <div style="white-space:pre-wrap;margin-top:6px">${esc(d.text)}</div></div>`).join('');
   return `
-    <h2>Meine Übungspläne</h2>
+    <h2>Tabata & Übungspläne</h2>
     ${plans}
     <button class="btn block" data-a="newPlan">+ Neuer Plan</button>
     <h2>Meine Skills · ${done} von ${sk.length}</h2>
@@ -790,6 +931,29 @@ function vPlan(p) {
       </div>
     </div>`).join('');
   return `<div class="card"><label class="f" style="margin-top:0">Name des Plans</label><input data-in="pName" value="${esc(p.name)}"></div>
+    <h2>Tabata</h2>
+    <div class="card">
+      <div class="grid2">
+        <div><label class="f" style="margin-top:0">Pause nach jeder Übung (Sek.)</label><input data-in="pRest" type="number" inputmode="numeric" min="0" value="${p.rest}"></div>
+        <div><label class="f" style="margin-top:0">Runden</label><input data-in="pRounds" type="number" inputmode="numeric" min="1" max="20" value="${p.rounds}"></div>
+      </div>
+      <label class="f">Musik</label>
+      <div class="row">
+        <div class="grow sub" style="margin:0">${p.musicName ? '♪ ' + esc(p.musicName) : 'Keine Musik'}</div>
+        <button class="btn small" data-a="pickPlanMusic">${p.musicName ? 'Ändern' : 'Hinzufügen'}</button>
+        ${p.musicName ? '<button class="icon" data-a="delPlanMusic" aria-label="Musik entfernen">✕</button>' : ''}
+      </div>
+      <label class="row" style="gap:8px;margin-top:14px;font-weight:600"><input type="checkbox" data-in="pCount" ${p.count !== false ? 'checked' : ''} style="width:22px;height:22px">Auf Englisch mitzählen (One … Eight)</label>
+      <div class="row" style="margin-top:10px">
+        <div class="grow"><label class="f" style="margin-top:0">Zähl-Tempo (Schläge pro Minute)</label>
+          <input data-in="pBpm" id="pBpm" type="number" inputmode="numeric" min="60" max="180" value="${p.bpm}"></div>
+      </div>
+      <div class="row gap" style="margin-top:10px">
+        <button class="btn small primary" data-a="pPreview" id="pPreview">▶︎ Probehören</button>
+        <button class="btn small" data-a="pTapPlan" id="pTapPlan">Im Takt tippen</button>
+      </div>
+      <p class="hint" style="margin:8px 0 0">Starte „Probehören“ und tippe 8-mal im Takt der Musik auf „Im Takt tippen“. Dann zählt die Stimme passend zur Musik.</p>
+    </div>
     <h2>Übungen · <span id="pTotal">${fmtTime(planSeconds(p))}</span> Min</h2>
     ${ex || empty('Noch keine Übungen', 'Füge die erste Übung hinzu.')}
     <button class="btn block" data-a="xAdd">+ Übung</button>
@@ -802,28 +966,57 @@ let runner = null;
 function startRunner(title, steps) {
   if (!steps.length) return;
   ctx();
-  runner = { title, steps, i: 0, left: steps[0].seconds, endAt: Date.now() + steps[0].seconds * 1000, running: true, lastWhole: null, iv: 0 };
+  stopPreview(); loadVoice();
+  runner = { title, steps, i: 0, left: steps[0].seconds, endAt: Date.now() + steps[0].seconds * 1000, running: true, lastWhole: null, iv: 0, raf: 0, musicId: null };
   runner.iv = setInterval(tick, 200);
   keepAwake(true);
-  $('#overlay').hidden = false; drawRunner();
+  $('#overlay').hidden = false; drawRunner(); enterStep(true);
+  countLoop();
+}
+function enterStep(cue) {
+  counter.stop();
+  const s = runner.steps[runner.i];
+  if (cue && s.voice) say(s.kind === 'work' ? 'go' : s.kind === 'rest' ? 'rest' : 'ready');
+  if (s.music !== runner.musicId) { runner.musicId = s.music; if (s.music) playMusic(s.music, true); else pauseMusic(); }
+  else if (s.music && runner.running) playMusic(s.music);
+  if (musicGain) musicGain.gain.value = s.voice ? 0.55 : 1;
+  if (runner.running && s.kind === 'work' && s.bpm) {
+    const wait = cue && s.voice ? 0.75 : 0;
+    setTimeout(() => { if (runner && runner.running && runner.steps[runner.i] === s) counter.start(s.bpm, runnerLeft()); }, wait * 1000);
+  }
+}
+function countLoop() {
+  if (!runner) return;
+  const el = $('#cdots');
+  if (el) { const idx = counter.idx(); [...el.children].forEach((d, i) => d.classList.toggle('on', i === idx)); }
+  runner.raf = requestAnimationFrame(countLoop);
 }
 function runnerLeft() { return runner.running ? (runner.endAt - Date.now()) / 1000 : runner.left; }
 function tick() {
   if (!runner || !runner.running) return;
   const left = runnerLeft(), whole = Math.ceil(left);
-  if (whole !== runner.lastWhole && whole <= 3 && whole > 0) beep(660, 0.09, 0.2);
+  const cur = runner.steps[runner.i], nx = runner.steps[runner.i + 1];
+  if (whole !== runner.lastWhole && whole <= 3 && whole > 0 && !(cur.kind === 'work' && cur.bpm)) beep(660, 0.09, 0.2);
   runner.lastWhole = whole;
-  if (left <= 0) { beep(1046, 0.35, 0.3); stepTo(runner.i + 1); return; }
+  if (left <= 0) { if (!(nx ? nx.voice : cur.voice)) beep(1046, 0.35, 0.3); stepTo(runner.i + 1, true); return; }
   updRunner();
 }
-function stepTo(i) {
-  if (i >= runner.steps.length) { runner.done = true; runner.running = false; drawRunner(); confetti(120); return; }
+function stepTo(i, cue = false) {
+  if (i >= runner.steps.length) {
+    counter.stop(); pauseMusic();
+    if (runner.steps[runner.steps.length - 1].voice) say('done');
+    runner.done = true; runner.running = false; drawRunner(); confetti(120); return;
+  }
   runner.i = Math.max(0, i);
   runner.left = runner.steps[runner.i].seconds;
   runner.endAt = Date.now() + runner.left * 1000;
-  runner.lastWhole = null; drawRunner();
+  runner.lastWhole = null; drawRunner(); enterStep(cue);
 }
-function closeRunner() { if (!runner) return; clearInterval(runner.iv); runner = null; $('#overlay').hidden = true; keepAwake(false); }
+function closeRunner() {
+  if (!runner) return;
+  clearInterval(runner.iv); cancelAnimationFrame(runner.raf); counter.stop(); pauseMusic();
+  runner = null; $('#overlay').hidden = true; keepAwake(false);
+}
 function drawRunner() {
   const o = $('#overlay');
   if (runner.done) {
@@ -840,6 +1033,7 @@ function drawRunner() {
       <div class="rStep" style="margin-top:10px">${esc(s.title)}</div>
       ${s.note ? `<div class="rNote">${esc(s.note)}</div>` : ''}
       <div class="rClock" id="rClock"></div>
+      ${s.kind === 'work' && s.bpm ? `<div class="cdots" id="cdots">${[1, 2, 3, 4, 5, 6, 7, 8].map(n => `<span>${n}</span>`).join('')}</div>` : ''}
       <div class="rBar"><div id="rBar"></div></div>
       <div class="rNext">${n ? 'Danach: ' + esc(n.title) : 'Letzter Abschnitt'}</div>
     </div>
@@ -856,20 +1050,31 @@ function updRunner() {
   c.textContent = fmtTime(Math.ceil(left)); c.classList.toggle('low', left <= 5);
   $('#rBar').style.width = (100 - left / s.seconds * 100) + '%';
 }
+const prepStep = p => ({ title: p.name, note: 'Mach dich bereit', seconds: 10, kind: 'prep', tag: 'Gleich geht’s los', music: p.musicId || null, voice: p.count !== false });
 function runSession(s) {
-  startRunner(s.title || 'Training', s.blocks.map(b => ({
-    title: b.note || BLOCKS[b.type].label, tag: BLOCKS[b.type].label, color: BLOCKS[b.type].color,
-    seconds: Math.max(1, Number(b.minutes) || 1) * 60,
-  })));
-}
-function runPlan(p) {
-  const steps = [{ title: 'Mach dich bereit', seconds: 10, tag: 'Gleich geht’s los' }];
-  p.exercises.forEach((e, i) => {
-    const sec = Math.max(5, Number(e.seconds) || 30);
-    if (e.sides) { steps.push({ title: e.name, tag: 'Links', seconds: sec, color: '#e2337f' }, { title: e.name, tag: 'Rechts', seconds: sec, color: '#7b3fe4' }); }
-    else steps.push({ title: e.name, seconds: sec });
+  const steps = s.blocks.flatMap(b => {
+    const p = b.planId && plan(b.planId);
+    if (p && p.exercises.length) return [prepStep(p), ...planSteps(p)];
+    return [{ title: b.note || BLOCKS[b.type].label, tag: BLOCKS[b.type].label, color: BLOCKS[b.type].color,
+      seconds: Math.max(1, Number(b.minutes) || 1) * 60 }];
   });
-  startRunner(p.name, steps);
+  startRunner(s.title || 'Training', steps);
+}
+function runPlan(p) { startRunner(p.name, [prepStep(p), ...planSteps(p)]); }
+
+// Probehören im Plan-Editor
+let preview = null;
+function stopPreview() {
+  if (!preview) return;
+  preview = null; counter.stop(); pauseMusic();
+  const b = $('#pPreview'); if (b) b.textContent = '▶︎ Probehören';
+}
+async function startPreview(p) {
+  ctx(); preview = { p, taps: [] };
+  $('#pPreview').textContent = '❚❚ Stopp';
+  if (p.musicId) { if (!musicCache[p.musicId]) await cacheMusic(); if (musicGain) musicGain.gain.value = p.count !== false ? 0.55 : 1; playMusic(p.musicId, true); }
+  await loadVoice();
+  if (preview && p.count !== false) counter.start(p.bpm || 120);
 }
 
 // ---------- Sicherung ----------
@@ -925,14 +1130,14 @@ const actions = {
   rDup() { const r = clone(routine(state.id)); r.id = uid(); r.name += ' (Kopie)'; r.eights.forEach(e => { e.id = uid(); }); db.routines.unshift(r); save(); state.stack.pop(); go('routine', r.id); },
   async rDel() {
     const r = routine(state.id); if (!confirm(`Routine „${r.name}“ wirklich löschen?`)) return;
-    if (r.musicId && !db.routines.some(x => x !== r && x.musicId === r.musicId)) idb.del(r.musicId).catch(() => {});
-    db.routines = db.routines.filter(x => x !== r); save(); back();
+    db.routines = db.routines.filter(x => x !== r); save();
+    if (r.musicId && !musicInUse(r.musicId)) idb.del(r.musicId).catch(() => {});
+    back();
   },
-  pickMusic() { $('#musicInput').click(); },
+  pickMusic() { musicTarget = 'routine'; $('#musicInput').click(); },
   delMusic() {
     const r = routine(state.id); if (!confirm('Musik aus dieser Routine entfernen?')) return;
-    if (r.musicId && !db.routines.some(x => x !== r && x.musicId === r.musicId)) idb.del(r.musicId).catch(() => {});
-    r.musicId = null; r.musicName = ''; save(); render();
+    const old = r.musicId; r.musicId = null; r.musicName = ''; save(); if (old && !musicInUse(old)) idb.del(old).catch(() => {}); render();
   },
   // Aufstellung
   fPrev() { state.eightIdx--; render(); },
@@ -1023,8 +1228,28 @@ const actions = {
   // Ich
   openPlan: el => go('plan', el.dataset.id),
   runPlan: el => runPlan(plan(el.dataset.id)),
-  newPlan() { const p = { id: uid(), name: 'Neuer Plan', exercises: [{ id: uid(), name: '', seconds: 30, sides: false }] }; db.me.plans.push(p); save(); go('plan', p.id); },
-  xAdd() { plan(state.id).exercises.push({ id: uid(), name: '', seconds: 30, sides: false }); save(); render(); },
+  newPlan() { const p = { id: uid(), name: 'Neuer Plan', exercises: [{ id: uid(), name: '', seconds: 20, sides: false }] }; planDefaults(p); db.me.plans.push(p); save(); go('plan', p.id); },
+  xAdd() { plan(state.id).exercises.push({ id: uid(), name: '', seconds: 20, sides: false }); save(); render(); },
+  pickPlanMusic() { musicTarget = 'plan'; $('#musicInput').click(); },
+  delPlanMusic() {
+    const p = plan(state.id); if (!confirm('Musik aus diesem Plan entfernen?')) return;
+    stopPreview(); const old = p.musicId; p.musicId = null; p.musicName = ''; save();
+    if (old && !musicInUse(old)) idb.del(old).catch(() => {});
+    render();
+  },
+  pPreview() { const p = plan(state.id); if (preview) stopPreview(); else startPreview(p); },
+  pTapPlan() {
+    if (!preview) { toast('Starte zuerst „Probehören“'); return; }
+    const now = performance.now(), taps = preview.taps, b = $('#pTapPlan');
+    if (taps.length && now - taps[taps.length - 1] > 2000) taps.length = 0;
+    taps.push(now); if (taps.length > 12) taps.shift();
+    if (taps.length < 4) { b.textContent = `Weiter tippen… (${taps.length})`; return; }
+    const bpm = Math.round(60000 * (taps.length - 1) / (taps[taps.length - 1] - taps[0]));
+    if (bpm >= 60 && bpm <= 180) {
+      preview.p.bpm = bpm; save(); $('#pBpm').value = bpm; b.textContent = `Tempo: ${bpm} ✓`;
+      if (preview.p.count !== false) counter.start(bpm);
+    }
+  },
   xUp(el) { move(plan(state.id).exercises, +el.dataset.i, -1); save(); render(); },
   xDown(el) { move(plan(state.id).exercises, +el.dataset.i, 1); save(); render(); },
   xDel(el) { plan(state.id).exercises.splice(+el.dataset.i, 1); save(); render(); },
@@ -1054,8 +1279,13 @@ const actions = {
   // Timer
   rClose() { if (runner && !runner.done && !confirm('Timer beenden?')) return; closeRunner(); },
   rToggle() {
-    if (runner.running) { runner.left = runnerLeft(); runner.running = false; }
-    else { runner.endAt = Date.now() + runner.left * 1000; runner.running = true; }
+    if (runner.running) { runner.left = runnerLeft(); runner.running = false; counter.stop(); pauseMusic(); }
+    else {
+      runner.endAt = Date.now() + runner.left * 1000; runner.running = true;
+      const st = runner.steps[runner.i];
+      if (st.music) playMusic(st.music);
+      if (st.kind === 'work' && st.bpm) counter.start(st.bpm, runner.left);
+    }
     $('#rToggle').textContent = runner.running ? '❚❚' : '▶︎';
   },
   rPrev() { stepTo(runnerLeft() < runner.steps[runner.i].seconds - 3 ? runner.i : runner.i - 1); },
@@ -1108,6 +1338,11 @@ function onInput(e) {
     case 'xName': exer().name = v; break;
     case 'xSec': exer().seconds = Math.max(5, Number(v) || 30); $('#pTotal').textContent = fmtTime(planSeconds(p)); break;
     case 'xSides': exer().sides = v; $('#pTotal').textContent = fmtTime(planSeconds(p)); break;
+    case 'pRest': p.rest = Math.max(0, Number(v) || 0); $('#pTotal').textContent = fmtTime(planSeconds(p)); break;
+    case 'pRounds': p.rounds = clamp(Number(v) || 1, 1, 20); $('#pTotal').textContent = fmtTime(planSeconds(p)); break;
+    case 'pCount': p.count = v; if (preview) { stopPreview(); } break;
+    case 'pBpm': { const n = Number(v); if (n >= 60 && n <= 180) { p.bpm = n; if (preview && p.count !== false) counter.start(n); } break; }
+    case 'bPlan': block().planId = v || null; break;
     default: return;
   }
   save();
@@ -1116,23 +1351,26 @@ document.addEventListener('input', onInput);
 document.addEventListener('change', e => {
   onInput(e);
   // Längen-/Zeitangaben neu berechnen, wenn das Feld verlassen wird
-  if (['rBpm', 'rOffset', 'aRole', 'aTeam', 'tName', 'sTeam'].includes(e.target.dataset.in)) render();
+  if (['rBpm', 'rOffset', 'aRole', 'aTeam', 'tName', 'sTeam', 'bPlan'].includes(e.target.dataset.in)) render();
 });
 
 $('#musicInput').addEventListener('change', async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
-  const r = routine(state.id); if (!r) return;
+  const r = musicTarget === 'plan' ? plan(state.id) : routine(state.id); if (!r) return;
   try {
+    stopPreview();
     const old = r.musicId, id = uid();
     await idb.put(id, f);
     r.musicId = id; r.musicName = f.name; save();
-    if (old && !db.routines.some(x => x.musicId === old)) idb.del(old).catch(() => {});
+    if (musicTarget === 'plan') musicCache[id] = URL.createObjectURL(f);
+    if (old && !musicInUse(old)) idb.del(old).catch(() => {});
     toast('Musik gespeichert ♪'); render();
   } catch (err) { toast('Musik konnte nicht gespeichert werden', 3500); }
 });
 $('#importInput').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) importData(f); });
 
 // ---------- Aufstellung: Punkte verschieben ----------
+let musicTarget = 'routine';
 let drag = null;
 document.addEventListener('pointerdown', e => {
   const dot = e.target.closest('#matEdit .dot'); if (!dot) return;
@@ -1169,3 +1407,4 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.se
 
 render();
 if (!db.welcomed) showWelcome();
+cacheMusic();

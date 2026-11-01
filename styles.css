@@ -268,3 +268,10 @@ button.card { width: 100%; border: 0; text-align: left; cursor: pointer; display
 .wGo { background: #fff; color: var(--dark); font-size: 17px; padding: 14px; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Tabata: 8er-Zähler im Timer */
+.cdots { display: flex; justify-content: center; gap: 8px; margin: 2px 0 6px; }
+.cdots span { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 800; background: #ffffff1f; color: #ffffffaa; transition: transform .08s, background .08s; }
+.cdots span.on { background: #fff; color: var(--dark); transform: scale(1.25); }
+.tblock > select { width: 100%; }
