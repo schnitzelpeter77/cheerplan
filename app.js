@@ -174,12 +174,14 @@ function upgrade(d) {
   if (d.welcomed === undefined) d.welcomed = true;
   patchTabata(d);
   d.me.plans.forEach(planDefaults);
+  // Wunsch Nov. 2026: Zählen mit Stimme standardmäßig aus
+  if (!d.patches.includes('voice-off-1')) { d.patches.push('voice-off-1'); d.me.plans.forEach(p => { p.count = false; }); }
   return d;
 }
 function planDefaults(p) {
   if (p.rest === undefined) p.rest = 10;
   if (p.rounds === undefined) p.rounds = 1;
-  if (p.count === undefined) p.count = true;
+  if (p.count === undefined) p.count = false;
   if (p.bpm === undefined) p.bpm = 120;
   if (p.musicId === undefined) { p.musicId = null; p.musicName = ''; }
 }
