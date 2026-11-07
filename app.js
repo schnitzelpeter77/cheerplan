@@ -160,6 +160,7 @@ function seed() {
 
 // ---------- Speicher ----------
 const KEY = 'cheerplan.v1';
+const APP_VERSION = '8 · 07.11.2026'; // bei jeder Änderung zusammen mit CACHE in sw.js hochzählen
 let db;
 function load() {
   try {
@@ -1005,7 +1006,7 @@ function vMe() {
       <div class="row gap"><button class="btn small primary" data-a="export">Sicherung speichern</button>
       <button class="btn small" data-a="import">Sicherung laden</button></div>
     </div>
-    <p class="hint" style="text-align:center;margin-top:24px">CheerPlan · Athletics Cheer Unit · mit ♥ gemacht</p>`;
+    <p class="hint" style="text-align:center;margin-top:24px">CheerPlan · Athletics Cheer Unit · mit ♥ gemacht<br>Version ${APP_VERSION}</p>`;
 }
 let diaryMood = 3;
 
@@ -1516,7 +1517,21 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // Offline-Unterstützung
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+// Updates sofort laden: Service Worker ohne Browser-Zwischenspeicher prüfen und bei jedem Öffnen nachsehen.
+// Kommt eine neue Version, lädt die App einmal neu (nicht, während ein Timer oder die Musik läuft).
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;
+    if (runner || (player && player.playing)) { toast('Neue Version da – sie lädt beim nächsten Öffnen.', 3500); return; }
+    reloading = true; location.reload();
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+  }).catch(() => {});
+}
 
 render();
 if (!db.welcomed) showWelcome();
