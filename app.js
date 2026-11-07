@@ -267,7 +267,7 @@ const teamSelect = (key, sel) => db.teams.length ? `<label class="f">Team</label
 const roleColor = role => ROLES[role] || '#7c8799';
 const eightSec = r => 8 * 60 / (r.bpm || 144);
 const routineDuration = r => r.eights.length * eightSec(r);
-const newEight = (section = 'dance') => ({ id: uid(), section, counts: ['', '', '', '', '', '', '', ''], note: '', formation: null });
+const newEight = (section = 'dance') => ({ id: uid(), section, counts: ['', '', '', '', '', '', '', ''], note: '', formation: null, gName: '', groups: [] });
 
 function effectiveFormation(r, idx) {
   for (let i = Math.min(idx, r.eights.length - 1); i >= 0; i--) {
@@ -279,6 +279,29 @@ function ownFormation(r, idx) {
   const e = r.eights[idx];
   if (!e.formation) e.formation = clone(effectiveFormation(r, idx).pos);
   return e.formation;
+}
+// Wunsch Nov. 2026: mehrere Aufstellungen (Matten) pro Routine, z. B. „Opening“ für Achter 1–2,
+// „Stunt“ für Achter 3–5. Eine Aufstellung beginnt bei einem Achter mit eigener Aufstellung
+// und gilt, bis ein späterer Achter eine neue bekommt.
+function formationSegments(r) {
+  const segs = [];
+  r.eights.forEach((e, i) => {
+    if (e.formation || i === 0) segs.push({ start: i, end: i, eight: e, empty: !e.formation });
+    else segs[segs.length - 1].end = i;
+  });
+  let n = 0;
+  segs.forEach(s => { if (!s.empty) n++; s.name = s.empty ? 'Ohne Aufstellung' : (s.eight.fName || `Aufstellung ${n}`); });
+  return segs;
+}
+const segmentOf = (r, idx) => formationSegments(r).find(s => idx >= s.start && idx <= s.end);
+const eightRange = s => s.start === s.end ? `${s.start + 1}. Achter` : `Achter ${s.start + 1}–${s.end + 1}`;
+// Wunsch Nov. 2026: mehrere Stuntgruppen im selben Achter (z. B. Group Miley / Group Lina)
+const newGroup = (name = '') => ({ id: uid(), name, counts: ['', '', '', '', '', '', '', ''] });
+const eightRows = e => [{ name: e.gName || '', counts: e.counts }, ...(e.groups || [])];
+function countText(e, k) {
+  const rows = eightRows(e).filter(g => g.counts[k]);
+  if (!e.groups || !e.groups.length) return rows.length ? rows[0].counts[k] : '';
+  return rows.map(g => (g.name ? g.name + ': ' : '') + g.counts[k]).join(' · ');
 }
 
 // ---------- Navigation ----------
@@ -406,22 +429,35 @@ function sectionOptions(sel) {
 
 function vCounts(r) {
   const es = eightSec(r), dur = routineDuration(r);
-  const eights = r.eights.map((e, i) => `
+  const segs = formationSegments(r);
+  const countInputs = (e, counts, g) => `<div class="counts">${counts.map((c, k) => `<label><span>${k + 1}</span><input data-in="${g === undefined ? 'eCount' : 'gCount'}" data-id="${e.id}" ${g === undefined ? '' : `data-g="${g}"`} data-k="${k}" value="${esc(c)}" autocomplete="off"></label>`).join('')}</div>`;
+  const eights = r.eights.map((e, i) => {
+    const groups = e.groups || [], seg = segs.find(s => i >= s.start && i <= s.end);
+    return `
     <div class="card eight" style="border-left-color:${SECTIONS[e.section]?.color}" data-eid="${e.id}">
       <div class="eh">
         <div class="num">${i + 1}. Achter<small>ab ${fmtTime((r.offset || 0) + i * es)}</small></div>
         <select data-in="eSection" data-id="${e.id}">${sectionOptions(e.section)}</select>
       </div>
-      <div class="counts">${e.counts.map((c, k) => `<label><span>${k + 1}</span><input data-in="eCount" data-id="${e.id}" data-k="${k}" value="${esc(c)}" autocomplete="off"></label>`).join('')}</div>
+      ${groups.length ? `<input class="gname" data-in="eGName" data-id="${e.id}" value="${esc(e.gName)}" placeholder="Gruppe, z. B. Group Miley" list="grpNames" autocomplete="off">` : ''}
+      ${countInputs(e, e.counts)}
+      ${groups.map((g, gi) => `<div class="grp">
+        <div class="gh"><input data-in="gName" data-id="${e.id}" data-g="${gi}" value="${esc(g.name)}" placeholder="Gruppe, z. B. Group Lina" list="grpNames" autocomplete="off">
+          <button class="icon" data-a="gDel" data-i="${i}" data-g="${gi}" aria-label="Gruppe entfernen">✕</button></div>
+        ${countInputs(e, g.counts, gi)}</div>`).join('')}
       <input class="note" data-in="eNote" data-id="${e.id}" value="${esc(e.note)}" placeholder="Notiz zu diesem Achter (optional)">
       <div class="tools">
-        <button class="btn small" data-a="eFormation" data-i="${i}">Aufstellung</button>
+        <button class="btn small" data-a="gAdd" data-i="${i}">+ Gruppe</button>
+        <button class="btn small fbtn" data-a="eFormation" data-i="${i}">${seg && !seg.empty ? (seg.start === i ? '▦ ' : '') + esc(seg.name) : 'Aufstellung'}</button>
         <button class="icon" data-a="eUp" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="nach oben">↑</button>
         <button class="icon" data-a="eDown" data-i="${i}" ${i === r.eights.length - 1 ? 'disabled' : ''} aria-label="nach unten">↓</button>
         <button class="icon" data-a="eDup" data-i="${i}" aria-label="kopieren">${I.copy}</button>
         <button class="icon" data-a="eDel" data-i="${i}" aria-label="löschen">✕</button>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
+  const names = [...new Set([...r.eights.flatMap(e => [e.gName, ...(e.groups || []).map(g => g.name)]),
+    ...teamAthletes(r.teamId).map(a => 'Group ' + a.name)].filter(Boolean))];
   return `
     <div class="card">
       <label class="f" style="margin-top:0">Name der Routine</label>
@@ -441,7 +477,9 @@ function vCounts(r) {
       Tempo und Startpunkt kannst du beim Abspielen bequem antippen.</p>
     </div>
     <h2>Count-Sheet</h2>
+    <p class="hint">Machen mehrere Stuntgruppen im selben Achter etwas anderes? Tippe beim Achter auf „+ Gruppe“.</p>
     ${eights || empty('Noch keine Achter', 'Füge den ersten Achter hinzu.')}
+    <datalist id="grpNames">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
     <div class="row gap" style="margin-top:6px">
       <button class="btn primary grow" data-a="eAdd">+ Achter hinzufügen</button>
     </div>
@@ -454,7 +492,7 @@ function vCounts(r) {
 function matHTML(pos, mode) {
   const dots = Object.entries(pos).map(([aid, p]) => {
     const a = athlete(aid); if (!a) return '';
-    return `<div class="dot" data-aid="${aid}" style="left:${p.x}%;top:${p.y}%;background:${roleColor(a.role)}">${esc(initials(a.name))}</div>`;
+    return `<div class="dot nm" data-aid="${aid}" style="left:${p.x}%;top:${p.y}%;background:${roleColor(a.role)}">${esc(a.name)}</div>`;
   }).join('');
   return `<div class="mat ${mode || ''}" ${mode === 'edit' ? 'id="matEdit"' : ''}>${dots}<div class="matfront">VORNE · Publikum / Jury</div></div>`;
 }
@@ -466,9 +504,11 @@ function vFormation(r) {
   const i = state.eightIdx = clamp(state.eightIdx, 0, r.eights.length - 1);
   const e = r.eights[i], eff = effectiveFormation(r, i);
   const sec = SECTIONS[e.section];
-  const status = e.formation ? 'Eigene Aufstellung für diesen Achter'
-    : eff.from >= 0 ? `Gleiche Aufstellung wie ${eff.from + 1}. Achter – zum Ändern einfach verschieben`
+  const segs = formationSegments(r), seg = segs.find(s => i >= s.start && i <= s.end);
+  const status = e.formation ? `„${esc(seg.name)}“ gilt für ${eightRange(seg)}`
+    : eff.from >= 0 ? `Gleiche Aufstellung wie ${eff.from + 1}. Achter („${esc(seg.name)}“). Für eine neue Matte tippe auf „Neue Aufstellung ab hier“.`
     : 'Noch keine Aufstellung – tippe unten auf Namen, um sie auf die Matte zu stellen';
+  const segBar = segs.length > 1 || !segs[0].empty ? `<div class="fsegs">${segs.map(s => `<button class="${s === seg ? 'on' : ''}" data-a="fGo" data-i="${s.start}"><b>${esc(s.name)}</b>${eightRange(s)}</button>`).join('')}</div>` : '';
   const tray = teamAthletes(r.teamId).map(a => {
     const on = !!eff.pos[a.id];
     return `<button class="${on ? 'on' : ''}" style="${on ? 'background:' + roleColor(a.role) : ''}" data-a="fToggle" data-aid="${a.id}">${esc(a.name)}</button>`;
@@ -479,12 +519,17 @@ function vFormation(r) {
       <div class="mid">${i + 1}. Achter <span class="chip" style="background:${sec.color}">${sec.label}</span></div>
       <button class="icon" data-a="fNext" ${i === r.eights.length - 1 ? 'disabled' : ''}>›</button>
     </div>
+    ${segBar}
+    ${e.formation ? `<input class="fname" data-in="fName" data-id="${e.id}" value="${esc(e.fName)}" placeholder="Name der Aufstellung, z. B. Opening" autocomplete="off">` : ''}
     <p class="hint" id="fStatus">${status}</p>
     ${matHTML(eff.pos, 'edit')}
     <div class="tray">${tray}</div>
-    <p class="hint">Punkte mit dem Finger verschieben. Ein Achter ohne eigene Aufstellung übernimmt die vom vorherigen.</p>
-    ${e.formation && i > 0 ? '<button class="btn small" data-a="fReset">Wieder wie vorheriger Achter</button>' : ''}
-    ${e.formation && i === 0 ? '<button class="btn small danger" data-a="fReset">Aufstellung leeren</button>' : ''}`;
+    <p class="hint">Namen mit dem Finger verschieben. Eine Aufstellung gilt ab ihrem Achter, bis ein späterer Achter eine neue bekommt.</p>
+    <div class="row gap">
+      ${!e.formation && eff.from >= 0 ? '<button class="btn small primary" data-a="fNew">+ Neue Aufstellung ab hier</button>' : ''}
+      ${e.formation && i > 0 ? '<button class="btn small" data-a="fReset">Aufstellung entfernen (wie davor)</button>' : ''}
+      ${e.formation && i === 0 ? '<button class="btn small danger" data-a="fReset">Aufstellung leeren</button>' : ''}
+    </div>`;
 }
 
 function vPlay(r) {
@@ -677,7 +722,7 @@ function paint() {
   if (t < off) {
     beatEl.className = 'pBeat wait';
     beatEl.textContent = player.playing ? `gleich… ${Math.ceil(off - t)}` : 'Bereit?';
-    $('#pEight').textContent = '1. Achter'; $('#pText').textContent = r.eights[0].counts[0] || '';
+    $('#pEight').textContent = '1. Achter'; $('#pText').textContent = countText(r.eights[0], 0);
     $('#pNext').textContent = ''; setSec(r.eights[0]); drawMiniMat(0);
     return;
   }
@@ -697,11 +742,11 @@ function paint() {
   }
   if (beatEl.classList.contains('wait')) beatEl.className = 'pBeat'; beatEl.textContent = k + 1;
   $('#pEight').textContent = `${ei + 1}. Achter`;
-  $('#pText').textContent = e.counts[k] || (k === 0 ? e.note : '') || '';
+  $('#pText').textContent = countText(e, k) || (k === 0 ? e.note : '') || '';
   let next = '';
   for (let j = count + 1; j < count + 8; j++) {
     const ne = r.eights[Math.floor(j / 8)]; if (!ne) break;
-    if (ne.counts[j % 8]) { next = `Gleich (${j % 8 + 1}): ${ne.counts[j % 8]}`; break; }
+    const nt = countText(ne, j % 8); if (nt) { next = `Gleich (${j % 8 + 1}): ${nt}`; break; }
   }
   $('#pNext').textContent = next;
   setSec(e); drawMiniMat(ei);
@@ -723,7 +768,41 @@ function tapTempo() {
 }
 
 // ---------- Ansicht: Training ----------
-function blockMinutes(b) { const p = b.planId && plan(b.planId); return p ? Math.ceil((planSeconds(p) + 10) / 60) : (Number(b.minutes) || 0); }
+// Wunsch Nov. 2026: Die Zeit ist bei jedem Baustein frei einstellbar – auch mit Plan (z. B. 15 Min Tabata).
+// Der Plan läuft dann so oft hintereinander, bis die eingestellte Zeit voll ist.
+function blockMinutes(b) { return Math.max(1, Number(b.minutes) || 1); }
+function planFill(p, totalSec) {
+  const one = planSteps(p), oneSec = one.reduce((a, st) => a + st.seconds, 0);
+  const avail = Math.max(5, totalSec - 10); // 10 Sek. „Mach dich bereit“
+  const passes = Math.max(1, Math.ceil(avail / oneSec - 0.05));
+  const rest = Math.max(0, Number(p.rest) || 0);
+  const steps = [];
+  for (let n = 0; n < passes; n++) {
+    if (n > 0 && rest) steps.push({ pass: n, title: 'Pause', kind: 'rest', seconds: rest, music: p.musicId || null, voice: p.count !== false, tag: 'Durchatmen', color: '#2fa564', note: 'Gleich: ' + one[0].title });
+    planSteps(p).forEach(st => {
+      st.pass = n; steps.push(st);
+    });
+  }
+  // auf die eingestellte Zeit kürzen (letzte Übung wird ggf. verkürzt, keine Pause am Ende)
+  let t = 0; const out = [];
+  for (const st of steps) {
+    if (t >= avail) break;
+    const sec = Math.min(st.seconds, Math.round(avail - t));
+    if (sec < 5) break;
+    out.push({ ...st, seconds: sec }); t += sec;
+  }
+  while (out.length > 1 && out[out.length - 1].kind === 'rest') out.pop();
+  const used = out.length ? out[out.length - 1].pass + 1 : 1;
+  if (used > 1) out.forEach(st => { if (st.kind === 'work') st.tag = [st.tag === 'Los!' ? '' : st.tag, `Durchgang ${st.pass + 1}/${used}`].filter(Boolean).join(' · '); });
+  return { steps: out, passes: used, oneSec };
+}
+function planHint(b) {
+  const p = b.planId && plan(b.planId); if (!p || !p.exercises.length) return '';
+  const f = planFill(p, blockMinutes(b) * 60), one = fmtTime(f.oneSec);
+  return f.passes > 1 ? `„${esc(p.name)}“ dauert ${one} Min und läuft ${f.passes}× hintereinander.`
+    : f.oneSec + 10 > blockMinutes(b) * 60 ? `„${esc(p.name)}“ dauert ${one} Min – wird nach ${blockMinutes(b)} Min beendet.`
+    : `„${esc(p.name)}“ dauert ${one} Min.`;
+}
 function sessionMinutes(s) { return s.blocks.reduce((a, b) => a + blockMinutes(b), 0); }
 function vTraining() {
   const t = today();
@@ -754,13 +833,13 @@ function vSession(s) {
     <div class="card tblock" style="border-left-color:${BLOCKS[b.type]?.color}">
       <div class="bh">
         <select data-in="bType" data-id="${b.id}">${blockOptions(b.type)}</select>
-        ${b.planId && plan(b.planId) ? `<span class="sub" style="margin:0">≈ ${blockMinutes(b)} Min</span>`
-          : `<input class="min" data-in="bMin" data-id="${b.id}" type="number" inputmode="numeric" min="1" value="${b.minutes}" aria-label="Minuten">
-        <span class="sub" style="margin:0">Min</span>`}
+        <input class="min" data-in="bMin" data-id="${b.id}" type="number" inputmode="numeric" min="1" value="${blockMinutes(b)}" aria-label="Minuten">
+        <span class="sub" style="margin:0">Min</span>
       </div>
       ${db.me.plans.length ? `<select data-in="bPlan" data-id="${b.id}" style="margin-top:8px">
         <option value="">Ohne Plan (nur Timer)</option>
         ${db.me.plans.map(p => `<option value="${p.id}" ${p.id === b.planId ? 'selected' : ''}>Plan: ${esc(p.name)}</option>`).join('')}</select>` : ''}
+      <p class="hint" data-hint="${b.id}" style="margin:6px 0 0">${planHint(b)}</p>
       <input data-in="bNote" data-id="${b.id}" value="${esc(b.note)}" placeholder="Was genau? z. B. Extensions, Full Downs" style="margin-top:8px">
       <div class="tools" style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px">
         <button class="icon" data-a="bUp" data-i="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
@@ -1069,7 +1148,7 @@ const prepStep = p => ({ title: p.name, note: 'Mach dich bereit', seconds: 10, k
 function runSession(s) {
   const steps = s.blocks.flatMap(b => {
     const p = b.planId && plan(b.planId);
-    if (p && p.exercises.length) return [prepStep(p), ...planSteps(p)];
+    if (p && p.exercises.length) return [prepStep(p), ...planFill(p, blockMinutes(b) * 60).steps];
     return [{ title: b.note || BLOCKS[b.type].label, tag: BLOCKS[b.type].label, color: BLOCKS[b.type].color,
       seconds: Math.max(1, Number(b.minutes) || 1) * 60 }];
   });
@@ -1135,11 +1214,21 @@ const actions = {
   eAdd() { const r = routine(state.id), last = r.eights[r.eights.length - 1]; r.eights.push(newEight(last ? last.section : 'dance')); save(); render(); window.scrollTo(0, document.body.scrollHeight); },
   eUp(el) { const r = routine(state.id); move(r.eights, +el.dataset.i, -1); save(); render(); },
   eDown(el) { const r = routine(state.id); move(r.eights, +el.dataset.i, 1); save(); render(); },
-  eDup(el) { const r = routine(state.id), i = +el.dataset.i, c = clone(r.eights[i]); c.id = uid(); r.eights.splice(i + 1, 0, c); save(); render(); },
+  eDup(el) { const r = routine(state.id), i = +el.dataset.i, c = clone(r.eights[i]); c.id = uid(); (c.groups || []).forEach(g => { g.id = uid(); }); r.eights.splice(i + 1, 0, c); save(); render(); },
   eDel(el) {
     const r = routine(state.id), i = +el.dataset.i, e = r.eights[i];
-    if ((e.counts.some(Boolean) || e.note) && !confirm(`${i + 1}. Achter löschen?`)) return;
+    if ((eightRows(e).some(g => g.counts.some(Boolean)) || e.note) && !confirm(`${i + 1}. Achter löschen?`)) return;
     r.eights.splice(i, 1); save(); render();
+  },
+  gAdd(el) {
+    const r = routine(state.id), e = r.eights[+el.dataset.i]; e.groups = e.groups || [];
+    e.groups.push(newGroup()); save(); const y = window.scrollY; render(); window.scrollTo(0, y);
+    const ins = document.querySelectorAll(`[data-eid="${e.id}"] .grp .gh input`); if (ins.length) ins[ins.length - 1].focus();
+  },
+  gDel(el) {
+    const r = routine(state.id), e = r.eights[+el.dataset.i], g = e.groups[+el.dataset.g];
+    if ((g.counts.some(Boolean) || g.name) && !confirm(`Gruppe ${g.name ? '„' + g.name + '“ ' : ''}aus diesem Achter entfernen?`)) return;
+    e.groups.splice(+el.dataset.g, 1); save(); const y = window.scrollY; render(); window.scrollTo(0, y);
   },
   eFormation(el) { state.tab = 'formation'; state.eightIdx = +el.dataset.i; render(); window.scrollTo(0, 0); },
   rDup() { const r = clone(routine(state.id)); r.id = uid(); r.name += ' (Kopie)'; r.eights.forEach(e => { e.id = uid(); }); db.routines.unshift(r); save(); state.stack.pop(); go('routine', r.id); },
@@ -1160,10 +1249,16 @@ const actions = {
   fToggle(el) {
     const r = routine(state.id), f = ownFormation(r, state.eightIdx), id = el.dataset.aid;
     if (f[id]) delete f[id];
-    else { const n = Object.keys(f).length; f[id] = { x: 15 + (n % 6) * 14, y: 22 + Math.floor(n / 6) * 18 % 70 }; }
+    else { const n = Object.keys(f).length; f[id] = { x: 14 + (n % 4) * 24, y: 12 + (Math.floor(n / 4) * 14) % 78 }; }
     save(); render();
   },
-  fReset() { const r = routine(state.id); r.eights[state.eightIdx].formation = null; save(); render(); },
+  fReset() {
+    const r = routine(state.id), e = r.eights[state.eightIdx];
+    if (state.eightIdx > 0 && !confirm('Diese Aufstellung entfernen? Der Achter übernimmt dann wieder die Aufstellung davor.')) return;
+    e.formation = null; e.fName = ''; save(); render();
+  },
+  fNew() { const r = routine(state.id); ownFormation(r, state.eightIdx); save(); render(); const n = $('.fname'); if (n) n.focus(); },
+  fGo(el) { state.eightIdx = +el.dataset.i; render(); },
   // Abspielen
   pToggle: togglePlay,
   pJump(el) {
@@ -1336,11 +1431,15 @@ function onInput(e) {
     case 'eSection': eight().section = v; el.closest('.eight').style.borderLeftColor = SECTIONS[v].color; break;
     case 'eCount': eight().counts[+el.dataset.k] = v; break;
     case 'eNote': eight().note = v; break;
+    case 'eGName': eight().gName = v; break;
+    case 'gName': eight().groups[+el.dataset.g].name = v; break;
+    case 'gCount': eight().groups[+el.dataset.g].counts[+el.dataset.k] = v; break;
+    case 'fName': eight().fName = v; break;
     case 'sTitle': s.title = v; $('#title').textContent = v || 'Training'; break;
     case 'sDate': if (v) s.date = v; break;
     case 'sNotes': s.notes = v; break;
     case 'bType': block().type = v; el.closest('.tblock').style.borderLeftColor = BLOCKS[v].color; break;
-    case 'bMin': block().minutes = Math.max(1, Number(v) || 1); $('#sTotal').textContent = sessionMinutes(s); break;
+    case 'bMin': { const b = block(); b.minutes = Math.max(1, Number(v) || 1); $('#sTotal').textContent = sessionMinutes(s); const h = $(`[data-hint="${b.id}"]`); if (h) h.innerHTML = planHint(b); break; }
     case 'bNote': block().note = v; break;
     case 'aName': { const a = athlete(id); if (v.trim()) a.name = v.trim(); break; }
     case 'aRole': athlete(id).role = v; break;
@@ -1366,7 +1465,7 @@ document.addEventListener('input', onInput);
 document.addEventListener('change', e => {
   onInput(e);
   // Längen-/Zeitangaben neu berechnen, wenn das Feld verlassen wird
-  if (['rBpm', 'rOffset', 'aRole', 'aTeam', 'tName', 'sTeam', 'bPlan'].includes(e.target.dataset.in)) render();
+  if (['rBpm', 'rOffset', 'aRole', 'aTeam', 'tName', 'sTeam', 'bPlan', 'fName'].includes(e.target.dataset.in)) render();
 });
 
 $('#musicInput').addEventListener('change', async e => {
@@ -1404,7 +1503,6 @@ function endDrag() {
   if (drag.moved) {
     const r = routine(state.id), f = ownFormation(r, state.eightIdx);
     f[drag.aid] = { x: Math.round(drag.x * 10) / 10, y: Math.round(drag.y * 10) / 10 }; save();
-    const st = $('#fStatus'); if (st) st.textContent = 'Eigene Aufstellung für diesen Achter';
     if (!$('[data-a="fReset"]')) { drag = null; render(); return; }
   }
   drag = null;
